@@ -268,7 +268,7 @@ WLED_GLOBAL bool hueApplyBri _INIT(true);
 WLED_GLOBAL bool hueApplyColor _INIT(true);
 
 // Time CONFIG
-WLED_GLOBAL bool ntpEnabled _INIT(false);         // get internet time. Only required if you use clock overlays or time-activated macros
+WLED_GLOBAL bool ntpEnabled _INIT(true);         // get internet time. Only required if you use clock overlays or time-activated macros
 WLED_GLOBAL bool useAMPM _INIT(false);            // 12h/24h clock format
 WLED_GLOBAL byte currentTimezone _INIT(0);        // Timezone ID. Refer to timezones array in wled10_ntp.ino
 WLED_GLOBAL int utcOffsetSecs _INIT(0);           // Seconds to offset from UTC before timzone calculation
