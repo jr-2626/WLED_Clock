@@ -3729,7 +3729,7 @@ const boolean segmentArray[11][7] = {{0, 0, 0, 0, 0, 0, 0}, {1, 1, 1, 0, 1, 1, 1
 
 
 //Comment or uncomment this for your setup!
-//#define USE_COLON_SEPARATOR
+#define USE_COLON_SEPARATOR
 
 uint16_t WS2812FX::mode_clock(void) {
 
