@@ -33,9 +33,23 @@ class AutoSaveUsermod : public Usermod {
     bool enabled = true;
 
     // configurable parameters
-    unsigned long autoSaveAfterSec = 15;  // 15s by default
+    #ifdef AUTOSAVE_AFTER_SEC
+    uint16_t autoSaveAfterSec = AUTOSAVE_AFTER_SEC;
+    #else
+    uint16_t autoSaveAfterSec = 15;       // 15s by default
+    #endif
+
+    #ifdef AUTOSAVE_PRESET_NUM
+    uint8_t autoSavePreset = AUTOSAVE_PRESET_NUM;
+    #else
     uint8_t autoSavePreset = 250;         // last possible preset
+    #endif
+
+    #ifdef USERMOD_AUTO_SAVE_ON_BOOT
+    bool applyAutoSaveOnBoot = USERMOD_AUTO_SAVE_ON_BOOT; 
+    #else
     bool applyAutoSaveOnBoot = false;     // do we load auto-saved preset on boot?
+    #endif
 
     // If we've detected the need to auto save, this will be non zero.
     unsigned long autoSaveAfter = 0;
@@ -64,7 +78,8 @@ class AutoSaveUsermod : public Usermod {
         PSTR("~ %02d-%02d %02d:%02d:%02d ~"),
         month(localTime), day(localTime),
         hour(localTime), minute(localTime), second(localTime));
-      savePreset(autoSavePreset, true, presetNameBuffer);
+      cacheInvalidate++;  // force reload of presets
+      savePreset(autoSavePreset, presetNameBuffer);
     }
 
     void inline displayOverlay() {
@@ -74,6 +89,10 @@ class AutoSaveUsermod : public Usermod {
         display->overlay("Settings", "Auto Saved", 1500);
       }
       #endif
+    }
+
+    void enable(bool enable) {
+      enabled = enable;
     }
 
   public:
@@ -87,6 +106,12 @@ class AutoSaveUsermod : public Usermod {
       display = (FourLineDisplayUsermod*) usermods.lookup(USERMOD_ID_FOUR_LINE_DISP);
       #endif
       initDone = true;
+      if (enabled && applyAutoSaveOnBoot) applyPreset(autoSavePreset);
+      knownBrightness = bri;
+      knownEffectSpeed = effectSpeed;
+      knownEffectIntensity = effectIntensity;
+      knownMode = strip.getMainSegment().mode;
+      knownPalette = strip.getMainSegment().palette;
     }
 
     // gets called every time WiFi is (re-)connected. Initialize own network
@@ -97,21 +122,11 @@ class AutoSaveUsermod : public Usermod {
      * Da loop.
      */
     void loop() {
-      if (!autoSaveAfterSec || !enabled) return;  // setting 0 as autosave seconds disables autosave
+      if (!autoSaveAfterSec || !enabled || strip.isUpdating() || currentPreset>0) return;  // setting 0 as autosave seconds disables autosave
 
       unsigned long now = millis();
-      uint8_t currentMode = strip.getMode();
-      uint8_t currentPalette = strip.getSegment(0).palette;
-      if (firstLoop) {
-        firstLoop = false;
-        if (applyAutoSaveOnBoot) applyPreset(autoSavePreset);
-        knownBrightness = bri;
-        knownEffectSpeed = effectSpeed;
-        knownEffectIntensity = effectIntensity;
-        knownMode = currentMode;
-        knownPalette = currentPalette;
-        return;
-      }
+      uint8_t currentMode = strip.getMainSegment().mode;
+      uint8_t currentPalette = strip.getMainSegment().palette;
 
       unsigned long wouldAutoSaveAfter = now + autoSaveAfterSec*1000;
       if (knownBrightness != bri) {
@@ -144,12 +159,24 @@ class AutoSaveUsermod : public Usermod {
      * Creating an "u" object allows you to add custom key/value pairs to the Info section of the WLED web UI.
      * Below it is shown how this could be used for e.g. a light sensor
      */
-    //void addToJsonInfo(JsonObject& root) {
-      //JsonObject user = root["u"];
-      //if (user.isNull()) user = root.createNestedObject("u");
-      //JsonArray data = user.createNestedArray(F("Autosave"));
-      //data.add(F("Loaded."));
-    //}
+    void addToJsonInfo(JsonObject& root) {
+      JsonObject user = root["u"];
+      if (user.isNull()) {
+        user = root.createNestedObject("u");
+      }
+
+      JsonArray infoArr = user.createNestedArray(FPSTR(_name));  // name
+
+      String uiDomString = F("<button class=\"btn btn-xs\" onclick=\"requestJson({");
+      uiDomString += FPSTR(_name);
+      uiDomString += F(":{");
+      uiDomString += FPSTR(_autoSaveEnabled);
+      uiDomString += enabled ? F(":false}});\">") : F(":true}});\">");
+      uiDomString += F("<i class=\"icons ");
+      uiDomString += enabled ? "on" : "off";
+      uiDomString += F("\">&#xe08f;</i></button>");
+      infoArr.add(uiDomString);
+    }
 
     /*
      * addToJsonState() can be used to add custom entries to the /json/state part of the JSON API (state object).
@@ -162,9 +189,20 @@ class AutoSaveUsermod : public Usermod {
      * readFromJsonState() can be used to receive data clients send to the /json/state part of the JSON API (state object).
      * Values in the state object may be modified by connected clients
      */
-    //void readFromJsonState(JsonObject& root) {
-    //  if (!initDone) return;  // prevent crash on boot applyPreset()
-    //}
+    void readFromJsonState(JsonObject& root) {
+      if (!initDone) return;  // prevent crash on boot applyPreset()
+      bool en = enabled;
+      JsonObject um = root[FPSTR(_name)];
+      if (!um.isNull()) {
+        if (um[FPSTR(_autoSaveEnabled)].is<bool>()) {
+          en = um[FPSTR(_autoSaveEnabled)].as<bool>();
+        } else {
+          String str = um[FPSTR(_autoSaveEnabled)]; // checkbox -> off or on
+          en = (bool)(str!="off"); // off is guaranteed to be present
+        }
+        if (en != enabled) enable(en);
+      }
+    }
 
     /*
      * addToConfig() can be used to add custom persistent settings to the cfg.json file in the "um" (usermod) object.
@@ -197,34 +235,29 @@ class AutoSaveUsermod : public Usermod {
      * readFromConfig() is called BEFORE setup(). This means you can use your persistent values in setup() (e.g. pin assignments, buffer sizes),
      * but also that if you want to write persistent values to a dynamic buffer, you'd need to allocate it here instead of in setup.
      * If you don't know what that is, don't fret. It most likely doesn't affect your use case :)
+     * 
+     * The function should return true if configuration was successfully loaded or false if there was no configuration.
      */
-    void readFromConfig(JsonObject& root) {
-      // we look for JSON object: {"Autosave": {"autoSaveAfterSec": 10, "autoSavePreset": 99}}
+    bool readFromConfig(JsonObject& root) {
+      // we look for JSON object: {"Autosave": {"enabled": true, "autoSaveAfterSec": 10, "autoSavePreset": 250, ...}}
       JsonObject top = root[FPSTR(_name)];
       if (top.isNull()) {
-        DEBUG_PRINTLN(F("No config found. (Using defaults.)"));
-        return;
+        DEBUG_PRINT(FPSTR(_name));
+        DEBUG_PRINTLN(F(": No config found. (Using defaults.)"));
+        return false;
       }
-      
-      if (top[FPSTR(_autoSaveEnabled)].is<bool>()) {
-        // reading from cfg.json
-        enabled = top[FPSTR(_autoSaveEnabled)].as<bool>();
-      } else {
-        // reading from POST message
-        String str = top[FPSTR(_autoSaveEnabled)]; // checkbox -> off or on
-        enabled = (bool)(str!="off"); // off is guaranteed to be present
-      }
-      autoSaveAfterSec = min(3600,max(10,top[FPSTR(_autoSaveAfterSec)].as<int>()));
-      autoSavePreset   = min(250,max(100,top[FPSTR(_autoSavePreset)].as<int>()));
-      if (top[FPSTR(_autoSaveApplyOnBoot)].is<bool>()) {
-        // reading from cfg.json
-        applyAutoSaveOnBoot = top[FPSTR(_autoSaveApplyOnBoot)].as<bool>();
-      } else {
-        // reading from POST message
-        String str = top[FPSTR(_autoSaveApplyOnBoot)]; // checkbox -> off or on
-        applyAutoSaveOnBoot = (bool)(str!="off"); // off is guaranteed to be present
-      }
-      DEBUG_PRINTLN(F("Autosave config (re)loaded."));
+
+      enabled             = top[FPSTR(_autoSaveEnabled)] | enabled;
+      autoSaveAfterSec    = top[FPSTR(_autoSaveAfterSec)] | autoSaveAfterSec;
+      autoSaveAfterSec    = (uint16_t) min(3600,max(10,(int)autoSaveAfterSec)); // bounds checking
+      autoSavePreset      = top[FPSTR(_autoSavePreset)] | autoSavePreset;
+      autoSavePreset      = (uint8_t) min(250,max(100,(int)autoSavePreset)); // bounds checking
+      applyAutoSaveOnBoot = top[FPSTR(_autoSaveApplyOnBoot)] | applyAutoSaveOnBoot;
+      DEBUG_PRINT(FPSTR(_name));
+      DEBUG_PRINTLN(F(" config (re)loaded."));
+
+      // use "return !top["newestParameter"].isNull();" when updating Usermod with new features
+      return true;
   }
 
     /*
